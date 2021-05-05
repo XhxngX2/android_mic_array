@@ -85,7 +85,7 @@ public class MainActivity extends AppCompatActivity {
                 mBufferSizeInBytes);
 
         short[] data = new short[mBufferSizeInBytes*2];
-/*
+
         mAudioRecord.startRecording();
 
         while(true) {
@@ -93,7 +93,7 @@ public class MainActivity extends AppCompatActivity {
             Log.d(TAG, "captured: "+resultLength+"samples");
         }
 
-*/
+
 
     }
 
