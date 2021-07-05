@@ -1,25 +1,61 @@
 package com.example.audiotrackdive;
 
 import android.Manifest;
-import android.content.Context;
-import android.content.pm.PackageManager;
-import android.media.AudioDeviceInfo;
+import android.annotation.SuppressLint;
 import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.media.AudioRecord;
-import android.media.AudioTrack;
 import android.media.MediaRecorder;
-import android.support.v4.app.ActivityCompat;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Message;
 import android.util.Log;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.TextView;
 
-public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "AudioDiveIn";
-    private AudioTrack mAudioTrack;
-    private AudioRecord mAudioRecord;
+import com.github.mikephil.charting.charts.LineChart;
+import com.github.mikephil.charting.components.Legend;
+import com.github.mikephil.charting.components.YAxis;
+import com.github.mikephil.charting.data.Entry;
+import com.github.mikephil.charting.data.LineData;
+import com.github.mikephil.charting.data.LineDataSet;
+import com.github.mikephil.charting.interfaces.datasets.ILineDataSet;
 
+import java.util.ArrayList;
+
+import static java.lang.Thread.State.NEW;
+
+public class MainActivity extends AppCompatActivity{
+    private static final String TAG = "AudioDiveIn";
+
+    private AudioRecord mAudioRecorder;
+
+    // should be set by a finding manner
+    private static final int SAMPLING_RATE = 44100;
+    private static final int AUDIO_SOURCE = MediaRecorder.AudioSource.MIC;
+    private static final int CHANNEL_IN_TYPE = AudioFormat.CHANNEL_IN_STEREO;
+    private static final int ENCODING_TYPE = AudioFormat.ENCODING_PCM_16BIT;
+
+    // audio recorder data related
+    private final int mMinBufferSize = AudioRecord.getMinBufferSize(SAMPLING_RATE, CHANNEL_IN_TYPE,ENCODING_TYPE);
+    private final int mBufferSize = mMinBufferSize *8;
+    private final int mPlotDataLength = mMinBufferSize *2;
+    private short[] mBufferShort = new short[mPlotDataLength];
+
+
+    private LineChart mLineChart;
+    private ArrayList<Entry> mValues;   //which should related to audio record data
+
+    // monitor thread
+    private Thread mMonitorThread;
+    private Handler myHandler;
 
     // Used to load the 'native-lib' library on application startup.
     static {
@@ -29,79 +65,119 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+        this.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        this.getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-        // Example of a call to a native method
-        TextView tv = findViewById(R.id.sample_text);
-        tv.setText(stringFromJNI());
+        Log.i(TAG, "onCreate:");
+
+        setContentView(R.layout.activity_main);
 
         ActivityCompat.requestPermissions(MainActivity.this,
                 new String[]{Manifest.permission.RECORD_AUDIO}, 12);
 
-        PackageManager tPackageManager = this.getPackageManager();
-        AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS);
+        {   // init text view
+            TextView tv = findViewById(R.id.sample_text);
+            tv.setText(stringFromJNI());
+        }
 
-        int[] tSampleRates = new int[]{8000,11025,22050,44100};
-        short[] tAudioFormat = new short[]{AudioFormat.ENCODING_PCM_8BIT,AudioFormat.ENCODING_PCM_16BIT,AudioFormat.ENCODING_PCM_FLOAT};
-        short[] tChannelConfig = new short[]{AudioFormat.CHANNEL_IN_MONO,AudioFormat.CHANNEL_IN_STEREO,
-                AudioFormat.CHANNEL_IN_BACK|AudioFormat.CHANNEL_IN_FRONT,AudioFormat.CHANNEL_IN_STEREO|AudioFormat.CHANNEL_IN_BACK|AudioFormat.CHANNEL_IN_FRONT};
+        {   // init Line Chart
+            mLineChart = findViewById(R.id.line_chart);
+            mLineChart.setDrawGridBackground(false);
+            mLineChart.getDescription().setEnabled(false);
+            mLineChart.setDrawBorders(false);
 
-/*
-        for (int rate : tSampleRates) {
-            for (int format : tAudioFormat) {
-                for (int chanel_config : tChannelConfig) {
-                    try {
+            mLineChart.getAxisLeft().setEnabled(true);
+            mLineChart.getAxisRight().setDrawAxisLine(true);
+            mLineChart.getAxisRight().setDrawGridLines(true);
+            mLineChart.getXAxis().setDrawAxisLine(true);
+            mLineChart.getXAxis().setDrawGridLines(true);
 
-                        int buffer_size = AudioRecord.getMinBufferSize(rate, chanel_config, format);
-                        if (buffer_size == AudioRecord.ERROR_BAD_VALUE) {
-                            Log.d(TAG, "onCreate: AudioRecorder Bad config value:" + rate + "Hz, chanel config:" +
-                                    chanel_config + ",format:" + format);
-                        } else {
-                            //    Log.d(TAG, "current buffer size:"+buffer_size+",with rate of "+rate+",chanel config" +
-                            //            ":"+chanel_config+",format:"+format);
-                        }
+            // enable touch gestures
+            mLineChart.setTouchEnabled(true);
 
-                    } catch (Exception e) {
-                        Log.e(TAG, "Wrong config", e);
-                    }
-                }
+            // enable scaling and dragging
+            mLineChart.setDragEnabled(true);
+            mLineChart.setScaleEnabled(true);
+
+            Legend l = mLineChart.getLegend();
+            l.setVerticalAlignment(Legend.LegendVerticalAlignment.TOP);
+            l.setHorizontalAlignment(Legend.LegendHorizontalAlignment.CENTER);
+            l.setOrientation(Legend.LegendOrientation.HORIZONTAL);
+            l.setDrawInside(false);
+
+            YAxis leftAxis = mLineChart.getAxisLeft();
+            leftAxis.setAxisMaximum(40000f);
+            leftAxis.setAxisMinimum(-40000f);
+            leftAxis.setDrawGridLines(true);
+            leftAxis.setGranularityEnabled(true);
+
+            ArrayList<ILineDataSet> tDataSets = new ArrayList<>();
+
+            mValues = new ArrayList<>();
+
+            for (int i = 0; i < mPlotDataLength; i++) {
+                mValues.add(new Entry(i, (float) mBufferShort[i]));
             }
+
+            LineDataSet d = new LineDataSet(mValues, "Microphone mono ");
+            d.setDrawCircles(false);    // no circle
+            d.setMode(LineDataSet.Mode.STEPPED); // stepped
+            d.setColor(getResources().getColor(R.color.purple_700));
+            d.setLineWidth(2.5f);
+            d.setCircleRadius(4f);
+            tDataSets.add(d);
+
+            LineData data = new LineData(tDataSets);
+            mLineChart.setData(data);
+            mLineChart.invalidate();
         }
 
-        */
+        // init audio recorder
+        mAudioRecorder = new AudioRecord(AUDIO_SOURCE, SAMPLING_RATE, CHANNEL_IN_TYPE, ENCODING_TYPE, mBufferSize);
+        mAudioRecorder.startRecording();
 
 
-        int mBufferSizeInBytes = AudioRecord.getMinBufferSize(
-                44100,
-                AudioFormat.CHANNEL_IN_STEREO|AudioFormat.CHANNEL_IN_BACK|AudioFormat.CHANNEL_IN_FRONT
-                ,AudioFormat.ENCODING_PCM_16BIT
-        );
+        // init thread stuff
 
-        AudioRecord mAudioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
-                44100,
-                AudioFormat.CHANNEL_IN_STEREO|AudioFormat.CHANNEL_IN_BACK|AudioFormat.CHANNEL_IN_FRONT,
-                AudioFormat.ENCODING_PCM_16BIT,
-                mBufferSizeInBytes);
+        myHandler = new Handler(Looper.getMainLooper(), msg -> {
+            if(msg.what == 1){
+                LineData data = mLineChart.getData();
+                data.notifyDataChanged();
+                mLineChart.invalidate();
+            }
+            return true;
+        });
 
-        short[] data = new short[mBufferSizeInBytes*2];
+        mMonitorThread = new Thread(()->{
 
-        mAudioRecord.startRecording();
+            for(;;) {
 
-        while(true) {
-            int resultLength = mAudioRecord.read(data, 0, mBufferSizeInBytes * 2);
-            Log.d(TAG, "captured: "+resultLength+"samples");
-        }
+                int resultLength = mAudioRecorder.read(mBufferShort, 0, mPlotDataLength);
 
+                for (int i = 0; i < resultLength; i++) {
+                    Entry entry = mValues.get(i);
+                    entry.setY((float) mBufferShort[i]);
+                }
 
+                Message message = new Message();
+                message.what = 1;
+                myHandler.sendMessage(message);
+            }
 
+        });
     }
 
-    
 
-    /**
-     * A native method that is implemented by the 'native-lib' native library,
-     * which is packaged with this application.
-     */
+
     public native String stringFromJNI();
+
+    @Override
+    protected void onResume() {
+        Log.i(TAG, "onResume");
+        if(mMonitorThread.getState()== NEW)
+            mMonitorThread.start();
+        super.onResume();
+
+    }
 }
