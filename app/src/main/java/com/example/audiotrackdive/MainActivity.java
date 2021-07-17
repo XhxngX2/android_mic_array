@@ -40,8 +40,10 @@ public class MainActivity extends AppCompatActivity{
     // should be set by a finding manner
     private static final int SAMPLING_RATE = 44100;
     private static final int AUDIO_SOURCE = MediaRecorder.AudioSource.MIC;
-    private static final int CHANNEL_IN_TYPE = AudioFormat.CHANNEL_IN_STEREO;
+    private static final int CHANNEL_IN_TYPE = 0xfc;
     private static final int ENCODING_TYPE = AudioFormat.ENCODING_PCM_16BIT;
+
+    private static final int CHANNEL_NUM = 6;
 
     // audio recorder data related
     private final int mMinBufferSize = AudioRecord.getMinBufferSize(SAMPLING_RATE, CHANNEL_IN_TYPE,ENCODING_TYPE);
@@ -116,8 +118,8 @@ public class MainActivity extends AppCompatActivity{
 
             mValues = new ArrayList<>();
 
-            for (int i = 0; i < mPlotDataLength; i++) {
-                mValues.add(new Entry(i, (float) mBufferShort[i]));
+            for (int i = 0; i < mPlotDataLength/CHANNEL_NUM; i++) {
+                mValues.add(new Entry(i, (float) mBufferShort[CHANNEL_NUM*i]));
             }
 
             LineDataSet d = new LineDataSet(mValues, "Microphone mono ");
@@ -155,9 +157,9 @@ public class MainActivity extends AppCompatActivity{
 
                 int resultLength = mAudioRecorder.read(mBufferShort, 0, mPlotDataLength);
 
-                for (int i = 0; i < resultLength; i++) {
+                for (int i = 0; i < resultLength/CHANNEL_NUM; i++) {
                     Entry entry = mValues.get(i);
-                    entry.setY((float) mBufferShort[i]);
+                    entry.setY((float) mBufferShort[i*CHANNEL_NUM]);
                 }
 
                 Message message = new Message();
